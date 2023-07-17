@@ -26,10 +26,14 @@ import os
 
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
-from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QFileDialog
+from qgis.PyQt.QtCore import Qt, QTimer
+from qgis.PyQt.QtWidgets import QFileDialog, QProgressBar
 
 from qgis.core import QgsProject, QgsVectorLayer, QgsGeometry, QgsRectangle, QgsFeature, QgsPalLayerSettings, QgsTextFormat
+from .selectcoordmodule import ClickPointTool
+
+#from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QProgressBar, QPushButton
+#from qgis.PyQt.QtCore import QTimer
 #from qgis.PyQt.QtCore import QVariant
 #import processing
 
@@ -57,13 +61,52 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         self.plTxtEdit_ShapeInfo.clear()
         self.le_OriginCoord_X.clear()
         self.le_OriginCoord_Y.clear()
+        self.progressBar.setValue(0)
         self.le_GridCell_Width.setText(str(self.grid_cell_w))
         self.le_GridCell_Height.setText(str(self.grid_cell_h))
         self.cb_UseCurrentActiveLayer.stateChanged.connect(self.on_UseCurrentActiveLayer_state_changed)
         self.pbBtn_Open_ShapeFile.clicked.disconnect()
         self.pbBtn_Create_Grid.clicked.disconnect()
+        self.pbBtn_Change_Origin_Coord.clicked.disconnect()
+        #self.pbBtn_Select_OutputFolder.clicked.disconnect()
         self.pbBtn_Open_ShapeFile.clicked.connect(self.on_pbBtn_Open_ShapeFile_clicked)
         self.pbBtn_Create_Grid.clicked.connect(self.on_pbBtn_Create_Grid_clicked)
+        self.pbBtn_Select_OutputFolder.clicked.connect(self.on_Btn_Select_OutputFolder_clicked)
+        self.pbBtn_Save_ShapeFiles.clicked.connect(self.on_pbBtn_Save_ShapeFiles_clicked)
+        self.pbBtn_Change_Origin_Coord.clicked.connect(self.on_pbBtn_Change_Origin_Coord_clicked)
+        
+    def on_pbBtn_Change_Origin_Coord_clicked(self):
+        self.plTxtEdit_Result_Message.clear()        
+        self.plTxtEdit_Result_Message.setPlainText("Change Coord button clicked")
+        self.plTxtEdit_Result_Message.appendPlainText("1. Move mouse to the position you want to select")
+        self.plTxtEdit_Result_Message.appendPlainText("2. Right click mouse to select")
+        canvas = self.iface.mapCanvas()
+        click_tool = ClickPointTool(canvas, self.iface,self.le_OriginCoord_X, self.le_OriginCoord_Y, self.plTxtEdit_Result_Message)
+        canvas.setMapTool(click_tool)
+        canvas.mousePressEvent = click_tool.canvasPressEvent
+        
+    def update_progress(self):
+        current_value = self.progressBar.value()
+        if current_value < 100:
+            self.progressBar.setValue(current_value + 10)  # Increment the value by 10
+            if current_value + 10 >= 100:
+                self.progressBar.setValue(100)
+        else:            
+            self.timer.stop()  # Stop the timer when progress reaches 100
+        
+    def on_pbBtn_Save_ShapeFiles_clicked(self):
+        # Start a QTimer to update the progress bar value after 2 seconds
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_progress)
+        self.timer.start(2000)  # 2000 milliseconds = 2 seconds
+        
+        
+    def on_Btn_Select_OutputFolder_clicked(self):
+        self.le_Output_Folder.setText('')
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Directory")
+        # Update the line edit widget with the selected folder path
+        if folder_path:
+            self.le_Output_Folder.setText(folder_path)
     
     #display the area information of the shape file or current active layer
     def display_shape_info(self,layer):
@@ -115,6 +158,9 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
     def on_pbBtn_Create_Grid_clicked(self):
         if self.shape_to_split is None:
             return
+        #display message
+        self.plTxtEdit_Result_Message.clear()
+        self.plTxtEdit_Result_Message.setPlainText("Create Grid")
         # Define the cell size and grid extent        
         extent = self.shape_to_split.extent()
         # Define the offset to move the origin
@@ -141,7 +187,7 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         grid_layer = QgsVectorLayer('Polygon?crs=' + self.shape_to_split.crs().toWkt(), 'Grid', 'memory')
         grid_layer.setOpacity(0.2)
         grid_provider = grid_layer.dataProvider()
-
+        cell_count = 0
         # Create grid features
         for row in range(rows):
             for col in range(columns):
@@ -150,7 +196,7 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
                 y1 = extent.yMinimum() + row * self.grid_cell_h
                 x2 = x1 + self.grid_cell_w
                 y2 = y1 + self.grid_cell_h
-
+                cell_count +=1
                 # Create a polygon geometry for the grid cell
                 geometry = QgsGeometry.fromRect(QgsRectangle(x1, y1, x2, y2))
 
@@ -163,6 +209,7 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
                     # Add the feature to the grid layer
                     grid_provider.addFeature(feature)
 
+        self.plTxtEdit_Result_Message.appendPlainText(f"nums of cells in grid {cell_count}")
         # Update the extent
         grid_layer.updateExtents()
 
