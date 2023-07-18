@@ -27,10 +27,15 @@ import os
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtCore import Qt, QTimer
-from qgis.PyQt.QtWidgets import QFileDialog, QProgressBar
+from qgis.PyQt.QtWidgets import QFileDialog, QProgressBar, QMessageBox
 
 from qgis.core import QgsProject, QgsVectorLayer, QgsGeometry, QgsRectangle, QgsFeature, QgsPalLayerSettings, QgsTextFormat
 from .selectcoordmodule import ClickPointTool
+
+from qgis.gui import QgsMapCanvas
+from qgis.core import QgsVectorFileWriter, QgsWkbTypes
+from qgis.PyQt.QtCore import QVariant
+import processing
 
 #from qgis.PyQt.QtWidgets import QWidget, QVBoxLayout, QProgressBar, QPushButton
 #from qgis.PyQt.QtCore import QTimer
@@ -58,6 +63,9 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         self.shape_to_split = None #global variable
         self.grid_cell_w = 5000
         self.grid_cell_h = 5000
+        self.origin_coord_X = 0
+        self.origin_coord_Y = 0
+        self.max_files_to_save = 100 #maximum nums of cells on grid to save to shape file
         self.plTxtEdit_ShapeInfo.clear()
         self.le_OriginCoord_X.clear()
         self.le_OriginCoord_Y.clear()
@@ -68,12 +76,14 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         self.pbBtn_Open_ShapeFile.clicked.disconnect()
         self.pbBtn_Create_Grid.clicked.disconnect()
         self.pbBtn_Change_Origin_Coord.clicked.disconnect()
+        self.pbBtn_Save_ShapeFiles.clicked.disconnect()
         #self.pbBtn_Select_OutputFolder.clicked.disconnect()
         self.pbBtn_Open_ShapeFile.clicked.connect(self.on_pbBtn_Open_ShapeFile_clicked)
         self.pbBtn_Create_Grid.clicked.connect(self.on_pbBtn_Create_Grid_clicked)
         self.pbBtn_Select_OutputFolder.clicked.connect(self.on_Btn_Select_OutputFolder_clicked)
-        self.pbBtn_Save_ShapeFiles.clicked.connect(self.on_pbBtn_Save_ShapeFiles_clicked)
+        #self.pbBtn_Save_ShapeFiles.clicked.connect(self.on_pbBtn_Save_ShapeFiles_clicked)
         self.pbBtn_Change_Origin_Coord.clicked.connect(self.on_pbBtn_Change_Origin_Coord_clicked)
+        self.pbBtn_Save_ShapeFiles.clicked.connect(self.on_pbBtn_Save_ShapeFiles)
         
     def on_pbBtn_Change_Origin_Coord_clicked(self):
         self.plTxtEdit_Result_Message.clear()        
@@ -91,7 +101,8 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
             self.progressBar.setValue(current_value + 10)  # Increment the value by 10
             if current_value + 10 >= 100:
                 self.progressBar.setValue(100)
-        else:            
+        else:
+            self.progressBar.setValue(0)
             self.timer.stop()  # Stop the timer when progress reaches 100
         
     def on_pbBtn_Save_ShapeFiles_clicked(self):
@@ -157,15 +168,23 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
     #function to create grid
     def on_pbBtn_Create_Grid_clicked(self):
         if self.shape_to_split is None:
+            QMessageBox.information(None, "Error","Please select shape file...!")
             return
         #display message
         self.plTxtEdit_Result_Message.clear()
         self.plTxtEdit_Result_Message.setPlainText("Create Grid")
+        # get grid cell width, height
+        self.grid_cell_w = int(self.le_GridCell_Width.text())
+        self.grid_cell_h = int(self.le_GridCell_Height.text())
+        #get origin coordinates information
+        self.origin_coord_X = int(self.le_OriginCoord_X.text())
+        self.origin_coord_Y = int(self.le_OriginCoord_Y.text())
         # Define the cell size and grid extent        
         extent = self.shape_to_split.extent()
         # Define the offset to move the origin
-        offset_x = 0
-        offset_y = 0
+        offset_x = self.origin_coord_X - int(extent.xMinimum())
+        offset_y = self.origin_coord_Y - int(extent.yMinimum())
+        self.plTxtEdit_Result_Message.appendPlainText(f" offset_x : {offset_x}, offset_y : {offset_y}")
 
         # Calculate the number of rows and columns for the grid
         if offset_x == 0 and offset_y == 0 :
@@ -180,6 +199,7 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
             # Calculate the new origin point            
             origin_x = extent.xMinimum() - (self.grid_cell_w -(offset_x % self.grid_cell_w))
             origin_y = extent.yMinimum() - (self.grid_cell_h -(offset_y % self.grid_cell_h))
+            self.plTxtEdit_Result_Message.appendPlainText(f" origin_x : {origin_x}, origin_y : {origin_y}")
 
 
 
@@ -192,8 +212,10 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         for row in range(rows):
             for col in range(columns):
                 # Calculate the coordinates of the grid cell
-                x1 = extent.xMinimum() + col * self.grid_cell_w
-                y1 = extent.yMinimum() + row * self.grid_cell_h
+                #x1 = extent.xMinimum() + col * self.grid_cell_w
+                #y1 = extent.yMinimum() + row * self.grid_cell_h
+                x1 = origin_x + col * self.grid_cell_w
+                y1 = origin_y + row * self.grid_cell_h
                 x2 = x1 + self.grid_cell_w
                 y2 = y1 + self.grid_cell_h
                 cell_count +=1
@@ -219,3 +241,153 @@ class SplitShapeDialog(QtWidgets.QDialog, FORM_CLASS):
         # Refresh the map canvas
         self.iface.mapCanvas().refresh()
         
+        
+    #function to create grid and save all cell in grid as separate shape file
+    def on_pbBtn_Save_ShapeFiles(self):
+        if self.shape_to_split is None:
+            QMessageBox.information(None, "Error","Please select shape file...!")
+            return
+        if self.le_Output_Folder.text().strip() == '':
+            QMessageBox.information(None, "Error ", "Please select Output Folder...!")
+            return
+        #display message
+        self.plTxtEdit_Result_Message.clear()
+        self.plTxtEdit_Result_Message.setPlainText("Create Grid")
+        # get grid cell width, height
+        self.grid_cell_w = int(self.le_GridCell_Width.text())
+        self.grid_cell_h = int(self.le_GridCell_Height.text())
+        #get origin coordinates information
+        self.origin_coord_X = int(self.le_OriginCoord_X.text())
+        self.origin_coord_Y = int(self.le_OriginCoord_Y.text())
+        # Define the cell size and grid extent        
+        extent = self.shape_to_split.extent()
+        # Define the offset to move the origin
+        offset_x = self.origin_coord_X - int(extent.xMinimum())
+        offset_y = self.origin_coord_Y - int(extent.yMinimum())
+        self.plTxtEdit_Result_Message.appendPlainText(f" offset_x : {offset_x}, offset_y : {offset_y}")
+
+        # Calculate the number of rows and columns for the grid
+        if offset_x == 0 and offset_y == 0 :
+            rows = int(extent.height() / self.grid_cell_h) + 1
+            columns = int(extent.width() / self.grid_cell_w) + 1
+            # Calculate the new origin point
+            origin_x = extent.xMinimum()
+            origin_y = extent.yMinimum()
+        else:
+            rows = int(extent.height() / self.grid_cell_h) + 2
+            columns = int(extent.width() / self.grid_cell_w) + 2
+            # Calculate the new origin point            
+            origin_x = extent.xMinimum() - (self.grid_cell_w -(offset_x % self.grid_cell_w))
+            origin_y = extent.yMinimum() - (self.grid_cell_h -(offset_y % self.grid_cell_h))
+            self.plTxtEdit_Result_Message.appendPlainText(f" origin_x : {origin_x}, origin_y : {origin_y}")
+
+
+
+        #check maximum nums of file to save
+        if rows*columns > self.max_files_to_save:
+            QMessageBox.information(None, "Error","Grid Cell size too small...!\n Please change Grid cell Width, Height...!")
+            return
+        # Create a new memory vector layer for the grid
+        grid_layer = QgsVectorLayer('Polygon?crs=' + self.shape_to_split.crs().toWkt(), 'Grid', 'memory')
+        grid_layer.setOpacity(0.2)
+        grid_provider = grid_layer.dataProvider()
+        cell_count = 0
+        # Create grid features
+        for row in range(rows):
+            for col in range(columns):
+                # Calculate the coordinates of the grid cell
+                #x1 = extent.xMinimum() + col * self.grid_cell_w
+                #y1 = extent.yMinimum() + row * self.grid_cell_h
+                x1 = origin_x + col * self.grid_cell_w
+                y1 = origin_y + row * self.grid_cell_h
+                x2 = x1 + self.grid_cell_w
+                y2 = y1 + self.grid_cell_h
+                cell_count +=1
+                # Create a polygon geometry for the grid cell
+                geometry = QgsGeometry.fromRect(QgsRectangle(x1, y1, x2, y2))
+
+                # Check if the grid cell's extent intersects with the vector layer extent
+                if extent.intersects(geometry.boundingBox()):
+                    # Create a new feature and set its geometry
+                    feature = QgsFeature()
+                    feature.setGeometry(geometry)
+
+                    # Add the feature to the grid layer
+                    grid_provider.addFeature(feature)
+
+        self.plTxtEdit_Result_Message.appendPlainText(f"nums of cells in grid {cell_count}")
+        # Update the extent
+        grid_layer.updateExtents()
+
+        # Add the grid layer to the QGIS project
+        QgsProject.instance().addMapLayer(grid_layer)
+
+        # Refresh the map canvas
+        self.iface.mapCanvas().refresh()
+        
+        # Define the output folder
+        #output_folder = 'D:/Tem/'
+        output_folder = self.le_Output_Folder.text()+ '/'
+        cell_idx = 0
+
+        # Clip the vector layer with the grid cells that have intersection
+        clipped_cells = []
+
+        for grid_feature in grid_layer.getFeatures():
+            geometry = grid_feature.geometry()
+
+            # Check if the grid cell's extent intersects with the vector layer extent
+            if extent.intersects(geometry.boundingBox()):
+                # Create a memory layer with the grid cell geometry
+                grid_mem_layer = QgsVectorLayer('Polygon?crs=' + self.shape_to_split.crs().toWkt(), 'GridCell', 'memory')
+                grid_mem_layer_data = grid_mem_layer.dataProvider()
+                grid_mem_layer_data.addFeature(grid_feature)
+
+                # Perform the clip operation
+                params = {
+                    'INPUT': self.shape_to_split,
+                    'OVERLAY': grid_mem_layer,
+                    'OUTPUT': 'memory:'
+                }
+
+                result = processing.run("native:clip", params)
+                clipped_layer = result['OUTPUT']
+
+                # Check if the clipped cell has any features
+                if clipped_layer.featureCount() > 0:
+                    # Set the name of the clipped layer using the cell ID
+                    #cell_id = grid_feature.id()
+                    clipped_layer.setName(f'cell_{cell_idx + 1 }')
+                    cell_idx = cell_idx + 1
+                    clipped_cells.append(clipped_layer)
+
+        # Save each clipped cell as a separate shapefile
+        for index, clipped_cell in enumerate(clipped_cells):
+            output_path = f'{output_folder}cell_{index + 1}.shp'  # Unique filename for each cell
+            QgsVectorFileWriter.writeAsVectorFormat(clipped_cell, output_path, 'UTF-8', clipped_cell.crs(), 'ESRI Shapefile')
+            
+            # set progress bar 
+            per_val = (index +1)*100/(cell_idx)
+            current_value = self.progressBar.value()
+            if current_value < 100:
+                self.progressBar.setValue(current_value + per_val)  # Increment the value by 10
+            if current_value + per_val >= 100:
+                self.progressBar.setValue(100)
+            # Add the clipped layer to the QGIS project
+            QgsProject.instance().addMapLayer(clipped_cell)
+        # Refresh the map canvas
+        self.iface.mapCanvas().refresh()
+        self.progressBar.setValue(100)
+        
+        self.plTxtEdit_Result_Message.clear()        
+        self.plTxtEdit_Result_Message.setPlainText("Finished...")
+        self.plTxtEdit_Result_Message.appendPlainText(f"Total : {index+1} shape files saved")
+        self.plTxtEdit_Result_Message.appendPlainText("Check output folder for results.")
+        # Start a QTimer to update the progress bar value after 2 seconds
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_progress)
+        self.timer.start(2000)  # 2000 milliseconds = 2 seconds
+
+        # Print a success message
+        #print('Clipping completed successfully.')
+        # end function
